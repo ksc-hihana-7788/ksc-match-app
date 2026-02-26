@@ -9,22 +9,20 @@ import traceback
 # --- ページ設定 ---
 st.set_page_config(page_title="KSC試合管理ツール", layout="centered")
 
-# --- 💡 スプレッドシートのURLを貼り付けてください ---
-# あなたの実際のスプレッドシートURLをここに貼り付けます
+# --- 💡 スプレッドシートのURL ---
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1QmQ5uw5HI3tHmYTC29uR8jh1IeSnu4Afn7a4en7yvLc/edit?gid=0#gid=0"
 
-# --- 修正後の接続設定 ---
+# --- 💡 Googleスプレッドシート接続設定（Secretsから読み込む） ---
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     try:
-        # key.jsonファイルを読み込む代わりに、Secretsから読み込む
+        # StreamlitのSecrets（秘密の箱）から認証情報を一括で読み込む
         creds_dict = json.loads(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         return client
     except Exception as e:
-        st.error(f"認証設定の読み込みに失敗しました。: {e}")
-        st.code(traceback.format_exc())
+        st.error(f"認証情報の読み込みに失敗しました。Secretsの設定を確認してください。: {e}")
         st.stop()
 
 # --- データの読み書き関数 ---
@@ -32,13 +30,10 @@ def load_data_from_gs():
     client = get_gspread_client()
     try:
         sh = client.open_by_url(SPREADSHEET_URL)
-        
-        # ワークシート1（試合一覧）を取得
         ws_list = sh.get_worksheet(0)
         data = ws_list.get_all_records()
         
         if not data:
-            # データが空の場合、初期設定を行う
             df = pd.DataFrame({
                 "選択": [False] * 100, 
                 "No": range(1, 101), 
@@ -48,13 +43,11 @@ def load_data_from_gs():
                 "試合分類": [""] * 100, 
                 "備考": [""] * 100
             })
-            # 2次元リスト形式で流し込み
             data_to_update = [df.columns.values.tolist()] + df.values.tolist()
             ws_list.update(data_to_update)
         else:
             df = pd.DataFrame(data)
         
-        # ワークシート2（詳細結果）を取得・なければ作成
         try:
             ws_res = sh.get_worksheet(1)
         except:
@@ -63,11 +56,9 @@ def load_data_from_gs():
         
         res_raw = ws_res.acell("A2").value
         results = json.loads(res_raw) if res_raw else {}
-        
         return df, results
     except Exception as e:
-        st.error(f"スプレッドシートの操作に失敗しました。URLや共有設定を確認してください。: {e}")
-        st.code(traceback.format_exc())
+        st.error(f"スプレッドシートの操作に失敗しました。: {e}")
         st.stop()
 
 def save_list_to_gs(df):
@@ -76,7 +67,6 @@ def save_list_to_gs(df):
         sh = client.open_by_url(SPREADSHEET_URL)
         ws = sh.get_worksheet(0)
         df_save = df.copy()
-        # 日付を文字列に変換
         df_save['日時'] = df_save['日時'].apply(lambda x: x.isoformat() if hasattr(x, 'isoformat') else x)
         data_to_update = [df_save.columns.values.tolist()] + df_save.values.tolist()
         ws.update(data_to_update)
@@ -115,7 +105,6 @@ if not st.session_state.authenticated:
 if 'df_list' not in st.session_state:
     st.session_state.df_list, st.session_state.match_results = load_data_from_gs()
 
-# --- 一覧の自動保存用 ---
 def on_table_change():
     if "main_table_editor" in st.session_state:
         edits = st.session_state["main_table_editor"]
@@ -152,7 +141,6 @@ if st.session_state.selected_match_no is None:
         st.session_state.selected_match_no = no
         st.rerun()
 else:
-    # --- 詳細画面 ---
     _, latest_res = load_data_from_gs()
     match_no = st.session_state.selected_match_no
     
@@ -172,5 +160,4 @@ else:
                 res_upd[rk] = {"score": score, "scorers": scorers}
                 save_res_to_gs(res_upd)
                 st.success(f"第 {i} 試合の結果を保存しました")
-
                 st.rerun()
