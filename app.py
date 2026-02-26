@@ -16,9 +16,9 @@ SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1QmQ5uw5HI3tHmYTC29uR8
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     try:
-        # StreamlitのSecrets（秘密の箱）から認証情報を一括で読み込む
-        creds_dict = json.loads(st.secrets["gcp_service_account"])
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        # Secretsに貼ったJSON文字列をそのまま読み込む
+        creds_info = json.loads(st.secrets["gcp_service_account"])
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
         client = gspread.authorize(creds)
         return client
     except Exception as e:
@@ -161,3 +161,4 @@ else:
                 save_res_to_gs(res_upd)
                 st.success(f"第 {i} 試合の結果を保存しました")
                 st.rerun()
+
