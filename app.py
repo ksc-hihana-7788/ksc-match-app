@@ -13,16 +13,17 @@ st.set_page_config(page_title="KSC試合管理ツール", layout="centered")
 # あなたの実際のスプレッドシートURLをここに貼り付けます
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1QmQ5uw5HI3tHmYTC29uR8jh1IeSnu4Afn7a4en7yvLc/edit?gid=0#gid=0"
 
-# --- 💡 Googleスプレッドシート接続設定（ファイル読み込み版） ---
+# --- 修正後の接続設定 ---
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     try:
-        # key.jsonファイルを読み込み
-        creds = ServiceAccountCredentials.from_json_keyfile_name("key.json", scope)
+        # key.jsonファイルを読み込む代わりに、Secretsから読み込む
+        creds_dict = json.loads(st.secrets["gcp_service_account"])
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         return client
     except Exception as e:
-        st.error(f"認証ファイル(key.json)の読み込みに失敗しました。: {e}")
+        st.error(f"認証設定の読み込みに失敗しました。: {e}")
         st.code(traceback.format_exc())
         st.stop()
 
@@ -171,4 +172,5 @@ else:
                 res_upd[rk] = {"score": score, "scorers": scorers}
                 save_res_to_gs(res_upd)
                 st.success(f"第 {i} 試合の結果を保存しました")
+
                 st.rerun()
