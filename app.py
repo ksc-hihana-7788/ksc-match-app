@@ -182,4 +182,6 @@ else:
                 new_s = [s.strip() for s in sc_input.split(",") if s.strip()]
                 new_s += [""] * (10 - len(new_s))
                 all_results[rk] = {"score": sc, "scorers": new_s[:10]}
-                ws_res.update_acell("A
+                ws_res.update_acell("A2", json.dumps(all_results, ensure_ascii=False))
+                st.toast(f"第{i}試合 保存完了")
+                st.rerun()
