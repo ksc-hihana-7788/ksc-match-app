@@ -41,6 +41,9 @@ def load_data():
     else:
         df = pd.DataFrame(data)
     
+    # 既存データの「日時」を日付型に変換（エディタでカレンダーを出すため）
+    df['日時'] = pd.to_datetime(df['日時']).dt.date
+    
     try:
         ws_res = sh.get_worksheet(1)
     except:
@@ -56,7 +59,8 @@ def save_list(df):
     sh = client.open_by_url(SPREADSHEET_URL)
     ws = sh.get_worksheet(0)
     df_save = df.copy()
-    df_save['日時'] = df_save['日時'].apply(lambda x: x.isoformat() if hasattr(x, 'isoformat') else x)
+    # 保存前に日付を文字列に戻す
+    df_save['日時'] = df_save['日時'].apply(lambda x: x.isoformat() if hasattr(x, 'isoformat') else str(x))
     ws.update([df_save.columns.values.tolist()] + df_save.values.tolist())
 
 def save_res(results):
@@ -81,25 +85,37 @@ if not st.session_state.authenticated:
             st.error("IDまたはパスワードが違います")
     st.stop()
 
-# --- データ保持 ---
+# --- データ初期ロード ---
 if 'df_list' not in st.session_state:
     st.session_state.df_list, st.session_state.results = load_data()
 
 if 'selected_no' not in st.session_state:
     st.session_state.selected_no = None
 
-# --- 画面切り替え用関数 ---
-def handle_selection():
-    # 編集データの中から「選択」がTrueになった行を探す
-    if "editor" in st.session_state:
-        edited = st.session_state["editor"]["edited_rows"]
-        for row_idx, changes in edited.items():
+# --- 自動保存と画面遷移の統合ハンドラ ---
+def on_data_change():
+    state = st.session_state["editor"]
+    
+    # 1. 編集内容の反映（自動保存）
+    if state["edited_rows"]:
+        for row_idx, changes in state["edited_rows"].items():
+            # フィルタ後のインデックスから元データのNoを特定
+            target_no = st.session_state.current_display_df.iloc[row_idx]["No"]
+            
+            # 詳細画面への遷移チェック（選択がTrueになった場合）
             if changes.get("選択") == True:
-                # フィルタ後のインデックスから、元データのNoを特定
-                actual_no = st.session_state.current_display_df.iloc[row_idx]["No"]
-                st.session_state.selected_no = int(actual_no)
-                # チェック状態をリセットして遷移
-                st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, "選択"] = False
+                st.session_state.selected_no = int(target_no)
+                # チェックを即解除（無限ループ防止）
+                st.session_state.df_list.loc[st.session_state.df_list['No'] == target_no, "選択"] = False
+            
+            # その他の変更を反映
+            for col, val in changes.items():
+                if col != "選択":
+                    st.session_state.df_list.loc[st.session_state.df_list['No'] == target_no, col] = val
+        
+        # スプレッドシートへ保存
+        save_list(st.session_state.df_list)
+        st.toast("スプレッドシートに自動保存しました ☁️")
 
 # --- 1. 一覧画面 ---
 if st.session_state.selected_no is None:
@@ -112,7 +128,7 @@ if st.session_state.selected_no is None:
     with c2:
         cat_filter = st.selectbox("📅 カテゴリー絞り込み", ["すべて", "U8", "U9", "U10", "U11", "U12"])
 
-    # フィルタリング
+    # 表示用データの作成
     df = st.session_state.df_list.copy()
     if cat_filter != "すべて":
         df = df[df["カテゴリー"] == cat_filter]
@@ -121,36 +137,27 @@ if st.session_state.selected_no is None:
     
     st.session_state.current_display_df = df
 
-    # データエディタ
-    edited_df = st.data_editor(
+    # データエディタ（リアルタイム連動）
+    st.data_editor(
         df,
         hide_index=True,
         column_config={
-            "選択": st.column_config.CheckboxColumn("選択"),
+            "選択": st.column_config.CheckboxColumn("詳細へ"),
             "No": st.column_config.NumberColumn(disabled=True),
             "カテゴリー": st.column_config.SelectboxColumn("カテゴリー", options=["U8", "U9", "U10", "U11", "U12"]),
-            "日時": st.column_config.DateColumn("日時", format="YYYY-MM-DD"),
+            "日時": st.column_config.DateColumn("日時", format="YYYY-MM-DD", required=True),
         },
         use_container_width=True,
         key="editor",
-        on_change=handle_selection
+        on_change=on_data_change
     )
 
-    col_btn1, col_btn2 = st.columns(2)
-    with col_btn1:
-        if st.button("💾 全体の変更を保存"):
-            # 反映処理
-            for idx, row in edited_df.iterrows():
-                st.session_state.df_list.loc[st.session_state.df_list['No'] == row['No']] = row
-            save_list(st.session_state.df_list)
-            st.success("スプレッドシートへ保存しました")
-
-    with col_btn2:
-        # PDF出力用（ブラウザの印刷機能呼び出し）
-        st.markdown(
-            '<button onclick="window.print()" style="width:100%; height:38px; border-radius:5px; border:1px solid #ccc; background-color:#f0f2f6; cursor:pointer;">📄 一覧をPDF出力 (印刷)</button>', 
-            unsafe_allow_html=True
-        )
+    st.divider()
+    # PDF出力用（印刷ボタン）
+    st.markdown(
+        '<button onclick="window.print()" style="width:100%; height:40px; border-radius:8px; border:1px solid #ddd; background-color:#ffffff; cursor:pointer; font-weight:bold;">📄 一覧をPDF出力 / 印刷</button>', 
+        unsafe_allow_html=True
+    )
 
 # --- 2. 詳細入力画面 ---
 else:
@@ -158,7 +165,7 @@ else:
     match_info = st.session_state.df_list[st.session_state.df_list["No"] == no].iloc[0]
     
     st.title(f"📝 試合結果入力 (No.{no})")
-    st.write(f"**{match_info['カテゴリー']}** | {match_info['日時']} | vs {match_info['対戦相手']}")
+    st.info(f"**{match_info['カテゴリー']}** | {match_info['日時']} | vs {match_info['対戦相手']}")
 
     if st.button("← 一覧に戻る"):
         st.session_state.selected_no = None
@@ -170,7 +177,7 @@ else:
     for i in range(1, 16):
         rk = f"res_{no}_{i}"
         sd = current_results.get(rk, {"score": "", "scorers": [""] * 10})
-        with st.expander(f"第 {i} 試合 {'✅' if rk in current_results else ''}"):
+        with st.expander(f"第 {i} 試合 {'✅ 保存済' if rk in current_results else ''}"):
             sc = st.text_input("スコア", value=sd["score"], key=f"s_{rk}")
             scorers_str = ", ".join([s for s in sd["scorers"] if s])
             sc_input = st.text_area("得点者 (カンマ区切り)", value=scorers_str, key=f"p_{rk}")
@@ -181,3 +188,4 @@ else:
                 current_results[rk] = {"score": sc, "scorers": new_s[:10]}
                 save_res(current_results)
                 st.toast(f"第{i}試合 保存完了")
+                st.rerun()
