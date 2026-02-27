@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import date, datetime
+from datetime import date
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import json
@@ -8,10 +8,9 @@ import json
 # --- ページ設定 ---
 st.set_page_config(page_title="KSC試合管理ツール", layout="wide")
 
-# --- スプレッドシートのURL ---
+# --- スプレッドシート設定 ---
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1QmQ5uw5HI3tHmYTC29uR8jh1IeSnu4Afn7a4en7yvLc/edit?gid=0#gid=0"
 
-# --- 接続設定 ---
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     try:
@@ -22,7 +21,6 @@ def get_gspread_client():
         st.error(f"認証エラー: {e}")
         st.stop()
 
-# --- データ読み書き ---
 def load_data():
     client = get_gspread_client()
     sh = client.open_by_url(SPREADSHEET_URL)
@@ -40,7 +38,6 @@ def load_data():
             "試合分類": [""] * 100,
             "備考": [""] * 100
         })
-        ws_list.update([df.columns.values.tolist()] + df.values.tolist())
     else:
         df = pd.DataFrame(data)
     
@@ -59,7 +56,6 @@ def save_list(df):
     sh = client.open_by_url(SPREADSHEET_URL)
     ws = sh.get_worksheet(0)
     df_save = df.copy()
-    # 日付オブジェクトを文字列に変換
     df_save['日時'] = df_save['日時'].apply(lambda x: x.isoformat() if hasattr(x, 'isoformat') else x)
     ws.update([df_save.columns.values.tolist()] + df_save.values.tolist())
 
@@ -82,100 +78,106 @@ if not st.session_state.authenticated:
             st.session_state.authenticated = True
             st.rerun()
         else:
-            st.error("不整合")
+            st.error("IDまたはパスワードが違います")
     st.stop()
 
-# --- メイン処理 ---
+# --- データ保持 ---
 if 'df_list' not in st.session_state:
     st.session_state.df_list, st.session_state.results = load_data()
 
-# 詳細画面への遷移管理
 if 'selected_no' not in st.session_state:
     st.session_state.selected_no = None
 
-# --- 一覧画面 ---
+# --- 画面切り替え用関数 ---
+def handle_selection():
+    # 編集データの中から「選択」がTrueになった行を探す
+    if "editor" in st.session_state:
+        edited = st.session_state["editor"]["edited_rows"]
+        for row_idx, changes in edited.items():
+            if changes.get("選択") == True:
+                # フィルタ後のインデックスから、元データのNoを特定
+                actual_no = st.session_state.current_display_df.iloc[row_idx]["No"]
+                st.session_state.selected_no = int(actual_no)
+                # チェック状態をリセットして遷移
+                st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, "選択"] = False
+
+# --- 1. 一覧画面 ---
 if st.session_state.selected_no is None:
     st.title("⚽ KSC試合管理一覧")
 
-    # --- 検索・フィルタエリア ---
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        search_query = st.text_input("🔍 キーワード検索 (相手、場所、備考など)", "")
-    with col2:
-        category_filter = st.selectbox("📅 カテゴリー絞り込み", ["すべて", "U8", "U9", "U10", "U11", "U12"])
+    # 検索・フィルタ
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        search_query = st.text_input("🔍 キーワード検索", "")
+    with c2:
+        cat_filter = st.selectbox("📅 カテゴリー絞り込み", ["すべて", "U8", "U9", "U10", "U11", "U12"])
 
-    # フィルタリング処理
-    display_df = st.session_state.df_list.copy()
-    if category_filter != "すべて":
-        display_df = display_df[display_df["カテゴリー"] == category_filter]
+    # フィルタリング
+    df = st.session_state.df_list.copy()
+    if cat_filter != "すべて":
+        df = df[df["カテゴリー"] == cat_filter]
     if search_query:
-        display_df = display_df[display_df.apply(lambda row: search_query.lower() in row.astype(str).str.lower().values, axis=1)]
+        df = df[df.apply(lambda r: search_query.lower() in r.astype(str).str.lower().values, axis=1)]
+    
+    st.session_state.current_display_df = df
 
-    # データエディタ表示
-    st.info("💡 カテゴリーや日時はセルをクリックして変更できます")
+    # データエディタ
     edited_df = st.data_editor(
-        display_df,
+        df,
         hide_index=True,
         column_config={
             "選択": st.column_config.CheckboxColumn("選択"),
             "No": st.column_config.NumberColumn(disabled=True),
-            "カテゴリー": st.column_config.SelectboxColumn("カテゴリー", options=["U8", "U9", "U10", "U11", "U12"], required=True),
-            "日時": st.column_config.DateColumn("日時", format="YYYY-MM-DD", required=True),
+            "カテゴリー": st.column_config.SelectboxColumn("カテゴリー", options=["U8", "U9", "U10", "U11", "U12"]),
+            "日時": st.column_config.DateColumn("日時", format="YYYY-MM-DD"),
         },
         use_container_width=True,
-        key="editor"
+        key="editor",
+        on_change=handle_selection
     )
 
-    # 保存ボタン（変更があった場合のみ表示）
-    if st.button("変更をスプレッドシートに保存"):
-        # 編集されたデータを元のリストに反映
-        for idx, row in edited_df.iterrows():
-            st.session_state.df_list.loc[st.session_state.df_list['No'] == row['No']] = row
-        save_list(st.session_state.df_list)
-        st.success("保存完了しました")
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        if st.button("💾 全体の変更を保存"):
+            # 反映処理
+            for idx, row in edited_df.iterrows():
+                st.session_state.df_list.loc[st.session_state.df_list['No'] == row['No']] = row
+            save_list(st.session_state.df_list)
+            st.success("スプレッドシートへ保存しました")
 
-    # 選択チェックが入ったか確認
-    selected_rows = edited_df[edited_df["選択"] == True]
-    if not selected_rows.empty:
-        st.session_state.selected_no = int(selected_rows.iloc[0]["No"])
-        # チェックを外した状態で保持（戻った時にループしないよう）
-        st.session_state.df_list.loc[st.session_state.df_list['No'] == st.session_state.selected_no, "選択"] = False
-        st.rerun()
+    with col_btn2:
+        # PDF出力用（ブラウザの印刷機能呼び出し）
+        st.markdown(
+            '<button onclick="window.print()" style="width:100%; height:38px; border-radius:5px; border:1px solid #ccc; background-color:#f0f2f6; cursor:pointer;">📄 一覧をPDF出力 (印刷)</button>', 
+            unsafe_allow_html=True
+        )
 
-# --- 詳細入力画面 ---
+# --- 2. 詳細入力画面 ---
 else:
     no = st.session_state.selected_no
     match_info = st.session_state.df_list[st.session_state.df_list["No"] == no].iloc[0]
     
     st.title(f"📝 試合結果入力 (No.{no})")
-    st.subheader(f"{match_info['カテゴリー']} | {match_info['日時']} | vs {match_info['対戦相手']}")
+    st.write(f"**{match_info['カテゴリー']}** | {match_info['日時']} | vs {match_info['対戦相手']}")
 
     if st.button("← 一覧に戻る"):
         st.session_state.selected_no = None
         st.rerun()
 
-    # 結果入力フォーム
     st.divider()
-    _, current_results = load_data() # 最新データ取得
+    _, current_results = load_data()
     
     for i in range(1, 16):
         rk = f"res_{no}_{i}"
         sd = current_results.get(rk, {"score": "", "scorers": [""] * 10})
-        
-        with st.expander(f"第 {i} 試合 {'✅ 保存済' if rk in current_results else ''}"):
-            c1, c2 = st.columns([1, 3])
-            with c1:
-                score = st.text_input("スコア", value=sd["score"], key=f"s_{rk}", placeholder="2-1")
-            with c2:
-                scorers_str = ", ".join([s for s in sd["scorers"] if s])
-                scorers_input = st.text_area("得点者 (カンマ区切り)", value=scorers_str, key=f"p_{rk}", help="選手名をカンマ(,)で区切って入力")
+        with st.expander(f"第 {i} 試合 {'✅' if rk in current_results else ''}"):
+            sc = st.text_input("スコア", value=sd["score"], key=f"s_{rk}")
+            scorers_str = ", ".join([s for s in sd["scorers"] if s])
+            sc_input = st.text_area("得点者 (カンマ区切り)", value=scorers_str, key=f"p_{rk}")
             
-            if st.button("この試合を保存", key=f"b_{rk}"):
-                # 文字列をリストに戻す
-                new_scorers = [s.strip() for s in scorers_input.split(",") if s.strip()]
-                new_scorers += [""] * (10 - len(new_scorers))
-                
-                _, res_upd = load_data()
-                res_upd[rk] = {"score": score, "scorers": new_scorers[:10]}
-                save_res(res_upd)
-                st.toast(f"第{i}試合を保存しました")
+            if st.button("保存", key=f"b_{rk}"):
+                new_s = [s.strip() for s in sc_input.split(",") if s.strip()]
+                new_s += [""] * (10 - len(new_s))
+                current_results[rk] = {"score": sc, "scorers": new_s[:10]}
+                save_res(current_results)
+                st.toast(f"第{i}試合 保存完了")
