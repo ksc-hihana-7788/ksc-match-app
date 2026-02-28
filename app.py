@@ -214,4 +214,27 @@ else:
     st.title("⚽ KSC試合管理一覧")
     c1, c2 = st.columns([2, 1])
     with c1: search_query = st.text_input("🔍 検索", "")
-    with c2: cat_filter = st.selectbox("📅 フィルタ", ["すべて", "U8",
+    with c2: cat_filter = st.selectbox("📅 フィルタ", ["すべて", "U8", "U9", "U10", "U11", "U12"])
+
+    df_display = st.session_state.df_list.copy()
+    if cat_filter != "すべて": df_display = df_display[df_display["カテゴリー"] == cat_filter]
+    if search_query: df_display = df_display[df_display.apply(lambda r: search_query.lower() in r.astype(str).str.lower().values, axis=1)]
+    
+    st.session_state.current_display_df = df_display
+
+    st.data_editor(
+        df_display,
+        hide_index=True,
+        column_config={
+            "詳細": st.column_config.CheckboxColumn("結果", default=False, width="small"),
+            "No": st.column_config.NumberColumn(disabled=True, width="small"),
+            "動画＆画像": st.column_config.CheckboxColumn("メディア", default=False, width="small"),
+            "カテゴリー": st.column_config.SelectboxColumn("カテゴリー", options=["U8", "U9", "U10", "U11", "U12"], width="small"),
+            "日時": st.column_config.DateColumn("日時", format="YYYY-MM-DD"),
+        },
+        use_container_width=True,
+        key="editor",
+        on_change=on_data_change
+    )
+    st.divider()
+    st.markdown('<button onclick="window.print()" style="width:100%; height:40px;">📄 印刷</button>', unsafe_allow_html=True)
