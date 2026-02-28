@@ -104,9 +104,12 @@ if st.session_state.media_no is not None:
     
     client = get_gspread_client()
     sh = client.open_by_url(SPREADSHEET_URL)
-    try: ws_media = sh.worksheet("media_storage")
-    except: 
-        ws_media = sh.add_worksheet(title="media_storage", rows="1000", cols="3")
+    
+    # 専用シート「media_storage」を確認・作成
+    try:
+        ws_media = sh.worksheet("media_storage")
+    except:
+        ws_media = sh.add_worksheet(title="media_storage", rows="2000", cols="3")
         ws_media.append_row(["match_no", "filename", "base64_data"])
     
     all_media_data = ws_media.get_all_records()
@@ -114,41 +117,56 @@ if st.session_state.media_no is not None:
 
     uploaded_file = st.file_uploader("スマホ写真を選択", type=["png", "jpg", "jpeg"])
     if uploaded_file and st.button("アップロード実行"):
-        with st.spinner("Googleの制限に合わせて最適化中..."):
+        with st.spinner("Googleの制限に合わせて画像を強力に圧縮中..."):
             try:
                 img = Image.open(uploaded_file)
                 img = ImageOps.exif_transpose(img).convert("RGB")
                 
+                # ★鉄壁の自動リサイズ・圧縮ループ
                 quality = 70
-                width = 1000
+                width = 800  # 最初からスマホ閲覧に十分なサイズまで落とす
+                encoded = ""
+                
                 while True:
                     img_temp = img.copy()
                     img_temp.thumbnail((width, width))
                     buf = BytesIO()
                     img_temp.save(buf, format="JPEG", quality=quality, optimize=True)
                     encoded = base64.b64encode(buf.getvalue()).decode()
-                    if len(encoded) < 48000: break
-                    quality -= 10
+                    
+                    # Googleの5万文字制限に対し、余裕をもって4万文字以下に調整
+                    if len(encoded) < 40000:
+                        break
+                    
+                    # まだ大きい場合はさらに縮小・画質を落とす
                     width -= 100
-                    if quality < 10 or width < 200: break
+                    quality -= 10
+                    if quality < 5 or width < 100:
+                        break
                 
                 ws_media.append_row([str(no), uploaded_file.name, encoded])
-                st.success("成功！")
+                st.success("写真を保存しました！")
                 st.rerun()
             except Exception as e:
-                st.error(f"保存失敗: {e}")
+                st.error(f"写真の保存に失敗しました。ファイルが壊れているか大きすぎます: {e}")
 
     st.subheader("保存済み写真")
     if match_photos:
         cols = st.columns(3)
         for idx, item in enumerate(match_photos):
             with cols[idx % 3]:
-                st.image(base64.b64decode(item['base64_data']), use_container_width=True)
-                if st.button("削除", key=f"del_{idx}"):
-                    cell = ws_media.find(item['base64_data'])
-                    ws_media.delete_rows(cell.row)
-                    st.rerun()
-    else: st.info("写真がありません。")
+                try:
+                    img_data = base64.b64decode(item['base64_data'])
+                    st.image(img_data, use_container_width=True)
+                    if st.button("削除", key=f"del_{idx}"):
+                        # セル内のデータで検索して行を削除
+                        cell = ws_media.find(item['base64_data'])
+                        ws_media.delete_rows(cell.row)
+                        st.rerun()
+                except:
+                    st.error("写真の表示に失敗しました")
+    else:
+        st.info("写真がありません。")
 
 elif st.session_state.selected_no is not None:
     no = st.session_state.selected_no
@@ -159,8 +177,9 @@ elif st.session_state.selected_no is not None:
     
     client = get_gspread_client()
     sh = client.open_by_url(SPREADSHEET_URL)
-    try: ws_res = sh.get_worksheet(1)
-    except: 
+    try:
+        ws_res = sh.get_worksheet(1)
+    except:
         ws_res = sh.add_worksheet(title="results", rows="100", cols="2")
         ws_res.update_acell("A1", "results_json")
 
@@ -172,28 +191,35 @@ elif st.session_state.selected_no is not None:
         sd = all_results.get(rk, {"score": "", "scorers": [""] * 10})
         with st.expander(f"第 {i} 試合"):
             sc = st.text_input("スコア", value=sd["score"], key=f"s_{rk}")
-            sc_input = st.text_area("得点者", value=", ".join([s for s in sd["scorers"] if s]), key=f"p_{rk}")
+            sc_input = st.text_area("得点者 (カンマ区切り)", value=", ".join([s for s in sd["scorers"] if s]), key=f"p_{rk}")
             if st.button("保存", key=f"b_{rk}"):
                 new_s = [s.strip() for s in sc_input.split(",") if s.strip()] + [""] * 10
                 all_results[rk] = {"score": sc, "scorers": new_s[:10]}
                 ws_res.update_acell("A2", json.dumps(all_results, ensure_ascii=False))
-                st.success("保存完了")
+                st.success("試合結果を保存しました")
 
 else:
     st.title("⚽ KSC試合管理一覧")
     c1, c2 = st.columns([2, 1])
-    with c1: search_query = st.text_input("🔍 検索")
-    with c2: cat_filter = st.selectbox("📅 絞り込み", ["すべて", "U8", "U9", "U10", "U11", "U12"])
+    with c1: search_query = st.text_input("🔍 試合・相手を検索")
+    with c2: cat_filter = st.selectbox("📅 カテゴリー絞り込み", ["すべて", "U8", "U9", "U10", "U11", "U12"])
     
     df = st.session_state.df_list.copy()
     if cat_filter != "すべて": df = df[df["カテゴリー"] == cat_filter]
     if search_query: df = df[df.apply(lambda r: search_query.lower() in r.astype(str).str.lower().values, axis=1)]
     
     st.session_state.current_display_df = df
-    st.data_editor(df, hide_index=True, column_config={
-        "詳細": st.column_config.CheckboxColumn("結果", width="small"),
-        "No": st.column_config.NumberColumn(disabled=True, width="small"),
-        "写真(画像)": st.column_config.CheckboxColumn("写真", width="small"),
-        "カテゴリー": st.column_config.SelectboxColumn("カテゴリー", options=["U8", "U9", "U10", "U11", "U12"], width="small"),
-        "日時": st.column_config.DateColumn("日時", format="YYYY-MM-DD")
-    }, use_container_width=True, key="editor", on_change=on_data_change)
+    st.data_editor(
+        df, 
+        hide_index=True, 
+        column_config={
+            "詳細": st.column_config.CheckboxColumn("結果入力", width="small"),
+            "No": st.column_config.NumberColumn(disabled=True, width="small"),
+            "写真(画像)": st.column_config.CheckboxColumn("写真管理", width="small"),
+            "カテゴリー": st.column_config.SelectboxColumn("カテゴリー", options=["U8", "U9", "U10", "U11", "U12"], width="small"),
+            "日時": st.column_config.DateColumn("日時", format="YYYY-MM-DD")
+        }, 
+        use_container_width=True, 
+        key="editor", 
+        on_change=on_data_change
+    )
