@@ -43,14 +43,7 @@ def load_data():
     
     # 全ての「詳細」チェックボックスを強制的にFalseで初期化（バグ防止）
     df['詳細'] = False
-    # 日時を日付型に変換
     df['日時'] = pd.to_datetime(df['日時']).dt.date
-    
-    # --- ★重要：列の並び順を左から「詳細」にする ---
-    cols = ['詳細', 'No', 'カテゴリー', '日時', '対戦相手', '試合場所', '試合分類', '備考']
-    # 存在する列だけで並び替え（エラー防止）
-    df = df[[c for c in cols if c in df.columns]]
-    
     return df
 
 def save_list(df):
@@ -58,9 +51,7 @@ def save_list(df):
     sh = client.open_by_url(SPREADSHEET_URL)
     ws = sh.get_worksheet(0)
     df_save = df.copy()
-    # 保存用に日付を文字列に戻す
     df_save['日時'] = df_save['日時'].apply(lambda x: x.isoformat() if hasattr(x, 'isoformat') else str(x))
-    # スプレッドシートへ書き込み（「詳細」列は保存不要なら落としても良いが、管理上含めて保存）
     ws.update([df_save.columns.values.tolist()] + df_save.values.tolist())
 
 # --- 3. 認証処理 ---
@@ -86,6 +77,7 @@ if 'df_list' not in st.session_state:
 if 'selected_no' not in st.session_state:
     st.session_state.selected_no = None
 
+# --- ★不具合修正の肝：データ変更時の処理 ---
 def on_data_change():
     changes = st.session_state["editor"]
     
@@ -93,12 +85,12 @@ def on_data_change():
     for row_idx, edit_values in changes["edited_rows"].items():
         actual_no = st.session_state.current_display_df.iloc[row_idx]["No"]
         
-        # 「詳細」にチェックが入った場合
+        # 「詳細」列のチェックが入った瞬間を検知
         if edit_values.get("詳細") == True:
             st.session_state.selected_no = int(actual_no)
-            # 画面遷移前にチェックを解除
+            # 遷移前に元データのチェックを強制リセット
             st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, "詳細"] = False
-            return 
+            return # 画面遷移を優先するため即終了
         
         # その他のデータの更新
         for col, val in edit_values.items():
@@ -119,7 +111,7 @@ if st.session_state.selected_no is None:
     with c2:
         cat_filter = st.selectbox("📅 カテゴリー絞り込み", ["すべて", "U8", "U9", "U10", "U11", "U12"])
 
-    # 表示データの抽出
+    # 表示用データの抽出
     df = st.session_state.df_list.copy()
     if cat_filter != "すべて":
         df = df[df["カテゴリー"] == cat_filter]
@@ -128,13 +120,66 @@ if st.session_state.selected_no is None:
     
     st.session_state.current_display_df = df
 
-    # データエディタ（詳細を左側に配置した設定）
+    # エディタの表示（列名を「詳細」に統一）
     st.data_editor(
         df,
         hide_index=True,
         column_config={
-            "詳細": st.column_config.CheckboxColumn("入力", default=False),
-            "No": st.column_config.NumberColumn(disabled=True, width="small"),
-            "カテゴリー": st.column_config.SelectboxColumn("カテゴリー", options=["U8", "U9", "U10", "U11", "U12"], width="small"),
-            "日時": st.column_config.DateColumn("日時", format="YYYY-MM-DD", width="medium"),
-            "対戦相手": st.column_config.TextColumn("対戦相手", width="medium"),
+            "詳細": st.column_config.CheckboxColumn("詳細入力へ", default=False),
+            "No": st.column_config.NumberColumn(disabled=True),
+            "カテゴリー": st.column_config.SelectboxColumn("カテゴリー", options=["U8", "U9", "U10", "U11", "U12"]),
+            "日時": st.column_config.DateColumn("日時", format="YYYY-MM-DD"),
+        },
+        use_container_width=True,
+        key="editor",
+        on_change=on_data_change
+    )
+
+    st.divider()
+    st.markdown(
+        '<button onclick="window.print()" style="width:100%; height:40px; border-radius:8px; border:1px solid #ddd; background-color:#ffffff; cursor:pointer; font-weight:bold;">📄 一覧をPDF出力 / 印刷</button>', 
+        unsafe_allow_html=True
+    )
+
+# --- 6. 詳細入力画面 ---
+else:
+    no = st.session_state.selected_no
+    match_info = st.session_state.df_list[st.session_state.df_list["No"] == no].iloc[0]
+    
+    st.title(f"📝 試合結果入力 (No.{no})")
+    st.info(f"**{match_info['カテゴリー']}** | {match_info['日時']} | vs {match_info['対戦相手']}")
+
+    # 「戻る」ボタンでセッションをクリーンアップ
+    if st.button("← 一覧に戻る"):
+        st.session_state.selected_no = None
+        # 一覧に戻る際、データを再読み込みしてチェック状態を完全にクリアする
+        st.session_state.df_list = load_data()
+        st.rerun()
+
+    st.divider()
+    
+    client = get_gspread_client()
+    sh = client.open_by_url(SPREADSHEET_URL)
+    try:
+        ws_res = sh.get_worksheet(1)
+    except:
+        ws_res = sh.add_worksheet(title="results", rows="100", cols="2")
+    
+    res_raw = ws_res.acell("A2").value
+    all_results = json.loads(res_raw) if res_raw else {}
+    
+    for i in range(1, 16):
+        rk = f"res_{no}_{i}"
+        sd = all_results.get(rk, {"score": "", "scorers": [""] * 10})
+        with st.expander(f"第 {i} 試合 {'✅ 保存済' if rk in all_results else ''}"):
+            sc = st.text_input("スコア", value=sd["score"], key=f"s_{rk}")
+            scorers_str = ", ".join([s for s in sd["scorers"] if s])
+            sc_input = st.text_area("得点者 (カンマ区切り)", value=scorers_str, key=f"p_{rk}")
+            
+            if st.button("この試合を保存", key=f"b_{rk}"):
+                new_s = [s.strip() for s in sc_input.split(",") if s.strip()]
+                new_s += [""] * (10 - len(new_s))
+                all_results[rk] = {"score": sc, "scorers": new_s[:10]}
+                ws_res.update_acell("A2", json.dumps(all_results, ensure_ascii=False))
+                st.toast(f"第{i}試合 保存完了")
+                st.rerun()
