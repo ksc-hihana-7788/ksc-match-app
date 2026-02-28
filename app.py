@@ -84,11 +84,9 @@ def on_data_change():
         actual_no = st.session_state.current_display_df.iloc[row_idx]["No"]
         if edit_values.get("詳細") == True:
             st.session_state.selected_no = int(actual_no)
-            st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, "詳細"] = False
             return 
         if edit_values.get("写真(画像)") == True:
             st.session_state.media_no = int(actual_no)
-            st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, "写真(画像)"] = False
             return
         for col, val in edit_values.items():
             if col not in ["詳細", "写真(画像)"]:
@@ -96,7 +94,7 @@ def on_data_change():
     save_list(st.session_state.df_list)
 
 # --- 5. メイン画面制御 ---
-# A. 写真管理画面
+# A. 写真管理画面（専用シート分散保存方式）
 if st.session_state.media_no is not None:
     no = st.session_state.media_no
     st.title(f"🖼️ 写真管理 (No.{no})")
@@ -106,50 +104,54 @@ if st.session_state.media_no is not None:
     
     client = get_gspread_client()
     sh = client.open_by_url(SPREADSHEET_URL)
-    try: ws_res = sh.get_worksheet(1)
-    except: ws_res = sh.add_worksheet(title="results", rows="100", cols="2")
+    # 専用シート「media_storage」を取得。なければ作成
+    try: 
+        ws_media = sh.worksheet("media_storage")
+    except: 
+        ws_media = sh.add_worksheet(title="media_storage", rows="1000", cols="3")
+        ws_media.append_row(["match_no", "filename", "base64_data"])
     
-    res_raw = ws_res.acell("B2").value
-    all_media = json.loads(res_raw) if res_raw else {}
-    match_media = all_media.get(str(no), [])
+    all_media_data = ws_media.get_all_records()
+    match_photos = [r for r in all_media_data if str(r['match_no']) == str(no)]
 
     uploaded_file = st.file_uploader("スマホの写真を選択してください", type=["png", "jpg", "jpeg"])
     if uploaded_file:
         if st.button("アップロード実行"):
-            with st.spinner("スマホ写真を最適化中..."):
+            with st.spinner("写真を最適化中..."):
                 try:
                     img = Image.open(uploaded_file)
-                    # スマホ特有の回転情報を補正
-                    img = ImageOps.exif_transpose(img)
+                    img = ImageOps.exif_transpose(img) # 回転補正
                     img = img.convert("RGB")
-                    # 容量削減のためサイズを縮小（長辺1200px）
-                    img.thumbnail((1200, 1200)) 
+                    img.thumbnail((1000, 1000)) # 長辺1000pxに縮小
                     
                     buf = BytesIO()
-                    # 画質を調整して容量を大幅カット
-                    img.save(buf, format="JPEG", quality=50, optimize=True) 
+                    img.save(buf, format="JPEG", quality=45, optimize=True) # 画質調整
                     encoded = base64.b64encode(buf.getvalue()).decode()
                     
-                    match_media.append({"name": uploaded_file.name, "type": "image/jpeg", "data": encoded})
-                    all_media[str(no)] = match_media
-                    ws_res.update_acell("B2", json.dumps(all_media))
+                    # セル制限回避のため、1枚1行で追加
+                    ws_media.append_row([str(no), uploaded_file.name, encoded])
                     st.success("アップロード成功！")
                     st.rerun()
                 except Exception as e:
                     st.error(f"エラーが発生しました: {e}")
 
     st.subheader("保存済み写真")
-    if match_media:
+    if match_photos:
         cols = st.columns(3)
-        for idx, item in enumerate(match_media):
+        for idx, item in enumerate(match_photos):
             with cols[idx % 3]:
-                data = base64.b64decode(item['data'])
-                st.image(data, use_container_width=True)
-                if st.button("削除", key=f"del_{idx}"):
-                    match_media.pop(idx)
-                    all_media[str(no)] = match_media
-                    ws_res.update_acell("B2", json.dumps(all_media))
-                    st.rerun()
+                try:
+                    img_data = base64.b64decode(item['base64_data'])
+                    st.image(img_data, use_container_width=True)
+                    if st.button("削除", key=f"del_{idx}"):
+                        # データの検索と削除
+                        cell = ws_media.find(item['base64_data'])
+                        ws_media.delete_rows(cell.row)
+                        st.rerun()
+                except:
+                    st.error("データの読み込みに失敗しました")
+    else:
+        st.info("写真がありません。")
 
 # B. 詳細入力画面
 elif st.session_state.selected_no is not None:
@@ -157,13 +159,18 @@ elif st.session_state.selected_no is not None:
     st.title(f"📝 試合結果入力 (No.{no})")
     if st.button("← 一覧に戻る"):
         st.session_state.selected_no = None
-        st.session_state.df_list = load_data()
         st.rerun()
+    
     client = get_gspread_client()
     sh = client.open_by_url(SPREADSHEET_URL)
-    ws_res = sh.get_worksheet(1)
+    try:
+        ws_res = sh.get_worksheet(1)
+    except:
+        ws_res = sh.add_worksheet(title="results", rows="100", cols="2")
+        
     res_raw = ws_res.acell("A2").value
     all_results = json.loads(res_raw) if res_raw else {}
+    
     for i in range(1, 11):
         rk = f"res_{no}_{i}"
         sd = all_results.get(rk, {"score": "", "scorers": [""] * 10})
@@ -182,9 +189,11 @@ else:
     c1, c2 = st.columns([2, 1])
     with c1: search_query = st.text_input("🔍 検索")
     with c2: cat_filter = st.selectbox("📅 絞り込み", ["すべて", "U8", "U9", "U10", "U11", "U12"])
+    
     df = st.session_state.df_list.copy()
     if cat_filter != "すべて": df = df[df["カテゴリー"] == cat_filter]
     if search_query: df = df[df.apply(lambda r: search_query.lower() in r.astype(str).str.lower().values, axis=1)]
+    
     st.session_state.current_display_df = df
     st.data_editor(df, hide_index=True, column_config={
         "詳細": st.column_config.CheckboxColumn("結果", width="small"),
