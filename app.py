@@ -28,7 +28,13 @@ def load_data():
     client = get_gspread_client()
     sh = client.open_by_url(SPREADSHEET_URL)
     ws_list = sh.get_worksheet(0)
-    data = ws_list.get_all_records()
+    
+    try:
+        data = ws_list.get_all_records()
+    except Exception as e:
+        # 巨大データで読み込みエラーが出た場合のセーフティ
+        st.warning("シートのデータが大きすぎるため、新規データとして表示します。")
+        data = []
     
     if not data:
         df = pd.DataFrame({
@@ -39,13 +45,14 @@ def load_data():
     else:
         df = pd.DataFrame(data)
     
+    # 列名の調整
     if "選択" in df.columns: df = df.drop(columns=["選択"])
     if "動画＆画像" in df.columns: df = df.rename(columns={"動画＆画像": "写真(画像)"})
     
     df['詳細'] = False
     df['写真(画像)'] = False
     if '日時' in df.columns: 
-        df['日時'] = pd.to_datetime(df['日時']).dt.date
+        df['日時'] = pd.to_datetime(df['日時'], errors='coerce').dt.date
     
     target_order = ['詳細', 'No', 'カテゴリー', '日時', '対戦相手', '試合場所', '試合分類', '備考', '写真(画像)']
     actual_cols = [col for col in target_order if col in df.columns]
@@ -104,7 +111,6 @@ if st.session_state.media_no is not None:
     
     client = get_gspread_client()
     sh = client.open_by_url(SPREADSHEET_URL)
-    
     try:
         ws_media = sh.worksheet("media_storage")
     except:
@@ -114,16 +120,16 @@ if st.session_state.media_no is not None:
     all_media_data = ws_media.get_all_records()
     match_photos = [r for r in all_media_data if str(r['match_no']) == str(no)]
 
-    uploaded_file = st.file_uploader("スマホ写真を選択", type=["png", "jpg", "jpeg"])
+    uploaded_file = st.file_uploader("スマホ写真を選択(JPEG/PNG)", type=["png", "jpg", "jpeg"])
     if uploaded_file and st.button("アップロード実行"):
-        with st.spinner("Googleの制限（5万文字）に合わせて強力に圧縮中..."):
+        with st.spinner("Googleの制限内に収まるよう自動圧縮中..."):
             try:
                 img = Image.open(uploaded_file)
                 img = ImageOps.exif_transpose(img).convert("RGB")
                 
-                # ★Googleのセル容量制限（約5万文字）を突破するための圧縮ループ
+                # 自動圧縮ループ：40,000文字（約30KB）以下になるまで繰り返す
                 quality = 70
-                width = 800  # 初期サイズ
+                width = 800
                 encoded = ""
                 
                 while True:
@@ -133,21 +139,19 @@ if st.session_state.media_no is not None:
                     img_temp.save(buf, format="JPEG", quality=quality, optimize=True)
                     encoded = base64.b64encode(buf.getvalue()).decode()
                     
-                    # 45,000文字以下ならGoogleスプレッドシートが受け付けてくれる
-                    if len(encoded) < 45000:
+                    if len(encoded) < 40000:
                         break
                     
-                    # それでも大きければサイズと画質をさらに下げる
                     width -= 100
                     quality -= 10
-                    if quality < 5 or width < 100:
+                    if quality < 5 or width < 200:
                         break
                 
                 ws_media.append_row([str(no), uploaded_file.name, encoded])
                 st.success("写真を保存しました！")
                 st.rerun()
             except Exception as e:
-                st.error(f"保存失敗: {e}")
+                st.error(f"保存エラー: {e}")
 
     st.subheader("保存済み写真")
     if match_photos:
@@ -175,7 +179,7 @@ elif st.session_state.selected_no is not None:
         ws_res = sh.get_worksheet(1)
     except:
         ws_res = sh.add_worksheet(title="results", rows="100", cols="2")
-        ws_res.update_acell("A1", "results_json")
+        ws_res.append_row(["key", "data"])
 
     res_raw = ws_res.acell("A2").value
     all_results = json.loads(res_raw) if res_raw else {}
