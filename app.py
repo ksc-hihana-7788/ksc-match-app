@@ -41,9 +41,23 @@ def load_data():
     else:
         df = pd.DataFrame(data)
     
-    # 全ての「詳細」チェックボックスを強制的にFalseで初期化（バグ防止）
+    # 全ての「詳細」チェックボックスを強制的にFalseで初期化
     df['詳細'] = False
-    df['日時'] = pd.to_datetime(df['日時']).dt.date
+    
+    # 日時を日付型に変換（カレンダー表示のため）
+    if '日時' in df.columns:
+        df['日時'] = pd.to_datetime(df['日時']).dt.date
+    
+    # --- ★重要：列の並び順を強制的に指定（「詳細」を一番左へ） ---
+    target_order = ['詳細', 'No', 'カテゴリー', '日時', '対戦相手', '試合場所', '試合分類', '備考']
+    
+    # 実際にデータに存在する列だけで並び替え
+    actual_cols = [col for col in target_order if col in df.columns]
+    # もしリストにない列がスプレッドシートにあれば末尾に追加
+    other_cols = [col for col in df.columns if col not in target_order]
+    
+    df = df[actual_cols + other_cols]
+    
     return df
 
 def save_list(df):
@@ -51,7 +65,9 @@ def save_list(df):
     sh = client.open_by_url(SPREADSHEET_URL)
     ws = sh.get_worksheet(0)
     df_save = df.copy()
-    df_save['日時'] = df_save['日時'].apply(lambda x: x.isoformat() if hasattr(x, 'isoformat') else str(x))
+    if '日時' in df_save.columns:
+        df_save['日時'] = df_save['日時'].apply(lambda x: x.isoformat() if hasattr(x, 'isoformat') else str(x))
+    # 更新後の列順も含めてスプレッドシートに反映
     ws.update([df_save.columns.values.tolist()] + df_save.values.tolist())
 
 # --- 3. 認証処理 ---
@@ -70,27 +86,27 @@ if not st.session_state.authenticated:
             st.error("IDまたはパスワードが違います")
     st.stop()
 
-# --- 4. データ管理ロジック ---
+# --- 4. セッション管理 ---
 if 'df_list' not in st.session_state:
     st.session_state.df_list = load_data()
 
 if 'selected_no' not in st.session_state:
     st.session_state.selected_no = None
 
-# --- ★不具合修正の肝：データ変更時の処理 ---
 def on_data_change():
     changes = st.session_state["editor"]
     
     # 編集内容の反映
     for row_idx, edit_values in changes["edited_rows"].items():
+        # 表示中の行インデックスから元データのNoを特定
         actual_no = st.session_state.current_display_df.iloc[row_idx]["No"]
         
-        # 「詳細」列のチェックが入った瞬間を検知
+        # 「詳細」にチェックが入った場合
         if edit_values.get("詳細") == True:
             st.session_state.selected_no = int(actual_no)
-            # 遷移前に元データのチェックを強制リセット
+            # 内部データの詳細フラグは常にFalseに戻す（遷移後の整合性のため）
             st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, "詳細"] = False
-            return # 画面遷移を優先するため即終了
+            return 
         
         # その他のデータの更新
         for col, val in edit_values.items():
@@ -104,31 +120,32 @@ def on_data_change():
 if st.session_state.selected_no is None:
     st.title("⚽ KSC試合管理一覧")
 
-    # 検索・フィルタ
+    # フィルタ機能
     c1, c2 = st.columns([2, 1])
     with c1:
         search_query = st.text_input("🔍 キーワード検索", "")
     with c2:
         cat_filter = st.selectbox("📅 カテゴリー絞り込み", ["すべて", "U8", "U9", "U10", "U11", "U12"])
 
-    # 表示用データの抽出
-    df = st.session_state.df_list.copy()
+    # データ表示の準備
+    df_display = st.session_state.df_list.copy()
     if cat_filter != "すべて":
-        df = df[df["カテゴリー"] == cat_filter]
+        df_display = df_display[df_display["カテゴリー"] == cat_filter]
     if search_query:
-        df = df[df.apply(lambda r: search_query.lower() in r.astype(str).str.lower().values, axis=1)]
+        df_display = df_display[df_display.apply(lambda r: search_query.lower() in r.astype(str).str.lower().values, axis=1)]
     
-    st.session_state.current_display_df = df
+    st.session_state.current_display_df = df_display
 
-    # エディタの表示（列名を「詳細」に統一）
+    # データエディタ（列設定と並び順）
     st.data_editor(
-        df,
+        df_display,
         hide_index=True,
         column_config={
-            "詳細": st.column_config.CheckboxColumn("詳細入力へ", default=False),
-            "No": st.column_config.NumberColumn(disabled=True),
-            "カテゴリー": st.column_config.SelectboxColumn("カテゴリー", options=["U8", "U9", "U10", "U11", "U12"]),
-            "日時": st.column_config.DateColumn("日時", format="YYYY-MM-DD"),
+            "詳細": st.column_config.CheckboxColumn("入力", default=False, width="small"),
+            "No": st.column_config.NumberColumn(disabled=True, width="small"),
+            "カテゴリー": st.column_config.SelectboxColumn("カテゴリー", options=["U8", "U9", "U10", "U11", "U12"], width="small"),
+            "日時": st.column_config.DateColumn("日時", format="YYYY-MM-DD", width="medium"),
+            "対戦相手": st.column_config.TextColumn("対戦相手", width="medium"),
         },
         use_container_width=True,
         key="editor",
@@ -149,10 +166,9 @@ else:
     st.title(f"📝 試合結果入力 (No.{no})")
     st.info(f"**{match_info['カテゴリー']}** | {match_info['日時']} | vs {match_info['対戦相手']}")
 
-    # 「戻る」ボタンでセッションをクリーンアップ
     if st.button("← 一覧に戻る"):
         st.session_state.selected_no = None
-        # 一覧に戻る際、データを再読み込みしてチェック状態を完全にクリアする
+        # 再読込してチェックを確実に消す
         st.session_state.df_list = load_data()
         st.rerun()
 
@@ -172,11 +188,11 @@ else:
         rk = f"res_{no}_{i}"
         sd = all_results.get(rk, {"score": "", "scorers": [""] * 10})
         with st.expander(f"第 {i} 試合 {'✅ 保存済' if rk in all_results else ''}"):
-            sc = st.text_input("スコア", value=sd["score"], key=f"s_{rk}")
+            sc = st.text_input("スコア", value=sd["score"], key=f"s_{rk}", placeholder="0-0")
             scorers_str = ", ".join([s for s in sd["scorers"] if s])
             sc_input = st.text_area("得点者 (カンマ区切り)", value=scorers_str, key=f"p_{rk}")
             
-            if st.button("この試合を保存", key=f"b_{rk}"):
+            if st.button("試合内容を保存", key=f"b_{rk}"):
                 new_s = [s.strip() for s in sc_input.split(",") if s.strip()]
                 new_s += [""] * (10 - len(new_s))
                 all_results[rk] = {"score": sc, "scorers": new_s[:10]}
