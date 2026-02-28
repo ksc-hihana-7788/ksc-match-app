@@ -45,10 +45,7 @@ def load_data():
     df['詳細'] = False
     df['写真(画像)'] = False
     if '日時' in df.columns: 
-        try:
-            df['日時'] = pd.to_datetime(df['日時']).dt.date
-        except:
-            pass
+        df['日時'] = pd.to_datetime(df['日時']).dt.date
     
     target_order = ['詳細', 'No', 'カテゴリー', '日時', '対戦相手', '試合場所', '試合分類', '備考', '写真(画像)']
     actual_cols = [col for col in target_order if col in df.columns]
@@ -86,10 +83,10 @@ def on_data_change():
     changes = st.session_state["editor"]
     for row_idx, edit_values in changes["edited_rows"].items():
         actual_no = st.session_state.current_display_df.iloc[row_idx]["No"]
-        if edit_values.get("詳細"):
+        if edit_values.get("詳細") == True:
             st.session_state.selected_no = int(actual_no)
             return 
-        if edit_values.get("写真(画像)"):
+        if edit_values.get("写真(画像)") == True:
             st.session_state.media_no = int(actual_no)
             return
         for col, val in edit_values.items():
@@ -107,8 +104,7 @@ if st.session_state.media_no is not None:
     
     client = get_gspread_client()
     sh = client.open_by_url(SPREADSHEET_URL)
-    try: 
-        ws_media = sh.worksheet("media_storage")
+    try: ws_media = sh.worksheet("media_storage")
     except: 
         ws_media = sh.add_worksheet(title="media_storage", rows="1000", cols="3")
         ws_media.append_row(["match_no", "filename", "base64_data"])
@@ -118,34 +114,26 @@ if st.session_state.media_no is not None:
 
     uploaded_file = st.file_uploader("スマホ写真を選択", type=["png", "jpg", "jpeg"])
     if uploaded_file and st.button("アップロード実行"):
-        with st.spinner("Googleの制限に合わせて画像を最適化中..."):
+        with st.spinner("Googleの制限に合わせて最適化中..."):
             try:
                 img = Image.open(uploaded_file)
-                img = ImageOps.exif_transpose(img)
-                img = img.convert("RGB")
+                img = ImageOps.exif_transpose(img).convert("RGB")
                 
-                # 自動リサイズ・圧縮ループ
                 quality = 70
                 width = 1000
-                encoded = ""
-                
                 while True:
                     img_temp = img.copy()
                     img_temp.thumbnail((width, width))
                     buf = BytesIO()
                     img_temp.save(buf, format="JPEG", quality=quality, optimize=True)
                     encoded = base64.b64encode(buf.getvalue()).decode()
-                    
-                    if len(encoded) < 48000: # Googleの5万文字制限の直前まで
-                        break
-                    
+                    if len(encoded) < 48000: break
                     quality -= 10
                     width -= 100
-                    if quality < 10 or width < 200:
-                        break
+                    if quality < 10 or width < 200: break
                 
                 ws_media.append_row([str(no), uploaded_file.name, encoded])
-                st.success("成功しました！")
+                st.success("成功！")
                 st.rerun()
             except Exception as e:
                 st.error(f"保存失敗: {e}")
@@ -155,14 +143,12 @@ if st.session_state.media_no is not None:
         cols = st.columns(3)
         for idx, item in enumerate(match_photos):
             with cols[idx % 3]:
-                img_data = base64.b64decode(item['base64_data'])
-                st.image(img_data, use_container_width=True)
+                st.image(base64.b64decode(item['base64_data']), use_container_width=True)
                 if st.button("削除", key=f"del_{idx}"):
                     cell = ws_media.find(item['base64_data'])
                     ws_media.delete_rows(cell.row)
                     st.rerun()
-    else:
-        st.info("写真がありません。")
+    else: st.info("写真がありません。")
 
 elif st.session_state.selected_no is not None:
     no = st.session_state.selected_no
@@ -173,11 +159,11 @@ elif st.session_state.selected_no is not None:
     
     client = get_gspread_client()
     sh = client.open_by_url(SPREADSHEET_URL)
-    try:
-        ws_res = sh.get_worksheet(1)
-    except:
+    try: ws_res = sh.get_worksheet(1)
+    except: 
         ws_res = sh.add_worksheet(title="results", rows="100", cols="2")
-        
+        ws_res.update_acell("A1", "results_json")
+
     res_raw = ws_res.acell("A2").value
     all_results = json.loads(res_raw) if res_raw else {}
     
@@ -191,7 +177,7 @@ elif st.session_state.selected_no is not None:
                 new_s = [s.strip() for s in sc_input.split(",") if s.strip()] + [""] * 10
                 all_results[rk] = {"score": sc, "scorers": new_s[:10]}
                 ws_res.update_acell("A2", json.dumps(all_results, ensure_ascii=False))
-                st.success(f"第 {i} 試合を保存しました")
+                st.success("保存完了")
 
 else:
     st.title("⚽ KSC試合管理一覧")
