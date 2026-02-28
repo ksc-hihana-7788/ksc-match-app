@@ -41,22 +41,21 @@ def load_data():
     else:
         df = pd.DataFrame(data)
     
-    # 全ての「詳細」チェックボックスを強制的にFalseで初期化
+    # 不要な「選択」列がデータに含まれている場合は削除
+    if "選択" in df.columns:
+        df = df.drop(columns=["選択"])
+    
+    # 全ての「詳細」チェックボックスをFalseで初期化
     df['詳細'] = False
     
-    # 日時を日付型に変換（カレンダー表示のため）
+    # 日時を日付型に変換
     if '日時' in df.columns:
         df['日時'] = pd.to_datetime(df['日時']).dt.date
     
-    # --- ★重要：列の並び順を強制的に指定（「詳細」を一番左へ） ---
+    # 列の並び順を「詳細」が一番左になるよう再構成
     target_order = ['詳細', 'No', 'カテゴリー', '日時', '対戦相手', '試合場所', '試合分類', '備考']
-    
-    # 実際にデータに存在する列だけで並び替え
     actual_cols = [col for col in target_order if col in df.columns]
-    # もしリストにない列がスプレッドシートにあれば末尾に追加
-    other_cols = [col for col in df.columns if col not in target_order]
-    
-    df = df[actual_cols + other_cols]
+    df = df[actual_cols]
     
     return df
 
@@ -67,7 +66,11 @@ def save_list(df):
     df_save = df.copy()
     if '日時' in df_save.columns:
         df_save['日時'] = df_save['日時'].apply(lambda x: x.isoformat() if hasattr(x, 'isoformat') else str(x))
-    # 更新後の列順も含めてスプレッドシートに反映
+    
+    # スプレッドシート保存時も「詳細」列は不要なため削除して保存
+    if "詳細" in df_save.columns:
+        df_save = df_save.drop(columns=["詳細"])
+        
     ws.update([df_save.columns.values.tolist()] + df_save.values.tolist())
 
 # --- 3. 認証処理 ---
@@ -96,19 +99,14 @@ if 'selected_no' not in st.session_state:
 def on_data_change():
     changes = st.session_state["editor"]
     
-    # 編集内容の反映
     for row_idx, edit_values in changes["edited_rows"].items():
-        # 表示中の行インデックスから元データのNoを特定
         actual_no = st.session_state.current_display_df.iloc[row_idx]["No"]
         
-        # 「詳細」にチェックが入った場合
         if edit_values.get("詳細") == True:
             st.session_state.selected_no = int(actual_no)
-            # 内部データの詳細フラグは常にFalseに戻す（遷移後の整合性のため）
             st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, "詳細"] = False
             return 
         
-        # その他のデータの更新
         for col, val in edit_values.items():
             if col != "詳細":
                 st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, col] = val
@@ -120,14 +118,12 @@ def on_data_change():
 if st.session_state.selected_no is None:
     st.title("⚽ KSC試合管理一覧")
 
-    # フィルタ機能
     c1, c2 = st.columns([2, 1])
     with c1:
         search_query = st.text_input("🔍 キーワード検索", "")
     with c2:
         cat_filter = st.selectbox("📅 カテゴリー絞り込み", ["すべて", "U8", "U9", "U10", "U11", "U12"])
 
-    # データ表示の準備
     df_display = st.session_state.df_list.copy()
     if cat_filter != "すべて":
         df_display = df_display[df_display["カテゴリー"] == cat_filter]
@@ -136,7 +132,6 @@ if st.session_state.selected_no is None:
     
     st.session_state.current_display_df = df_display
 
-    # データエディタ（列設定と並び順）
     st.data_editor(
         df_display,
         hide_index=True,
@@ -168,7 +163,6 @@ else:
 
     if st.button("← 一覧に戻る"):
         st.session_state.selected_no = None
-        # 再読込してチェックを確実に消す
         st.session_state.df_list = load_data()
         st.rerun()
 
