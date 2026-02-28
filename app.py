@@ -6,7 +6,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import json
 import base64
 from io import BytesIO
-from PIL import Image, ImageOps # 画像処理・回転補正用
+from PIL import Image, ImageOps
 
 # --- 1. ページ設定 ---
 st.set_page_config(page_title="KSC試合管理ツール", layout="wide")
@@ -94,7 +94,6 @@ def on_data_change():
     save_list(st.session_state.df_list)
 
 # --- 5. メイン画面制御 ---
-# A. 写真管理画面（専用シート分散保存方式）
 if st.session_state.media_no is not None:
     no = st.session_state.media_no
     st.title(f"🖼️ 写真管理 (No.{no})")
@@ -104,7 +103,6 @@ if st.session_state.media_no is not None:
     
     client = get_gspread_client()
     sh = client.open_by_url(SPREADSHEET_URL)
-    # 専用シート「media_storage」を取得。なければ作成
     try: 
         ws_media = sh.worksheet("media_storage")
     except: 
@@ -114,26 +112,40 @@ if st.session_state.media_no is not None:
     all_media_data = ws_media.get_all_records()
     match_photos = [r for r in all_media_data if str(r['match_no']) == str(no)]
 
-    uploaded_file = st.file_uploader("スマホの写真を選択してください", type=["png", "jpg", "jpeg"])
+    uploaded_file = st.file_uploader("スマホの写真を選択してください (自動で最適化されます)", type=["png", "jpg", "jpeg"])
     if uploaded_file:
         if st.button("アップロード実行"):
-            with st.spinner("写真を最適化中..."):
+            with st.spinner("写真を Google の制限に合わせて圧縮中..."):
                 try:
                     img = Image.open(uploaded_file)
-                    img = ImageOps.exif_transpose(img) # 回転補正
+                    img = ImageOps.exif_transpose(img)
                     img = img.convert("RGB")
-                    img.thumbnail((1000, 1000)) # 長辺1000pxに縮小
                     
-                    buf = BytesIO()
-                    img.save(buf, format="JPEG", quality=45, optimize=True) # 画質調整
-                    encoded = base64.b64encode(buf.getvalue()).decode()
+                    # ★抜本的改善：Googleのセル制限（5万文字）に収まるまでループで圧縮
+                    quality = 60
+                    width = 800 # 初期幅を小さめに設定
                     
-                    # セル制限回避のため、1枚1行で追加
+                    while True:
+                        img.thumbnail((width, width))
+                        buf = BytesIO()
+                        img.save(buf, format="JPEG", quality=quality, optimize=True)
+                        encoded = base64.b64encode(buf.getvalue()).decode()
+                        
+                        # エンコード後の文字数が45,000文字以下ならOK（安全圏）
+                        if len(encoded) < 45000:
+                            break
+                        
+                        # 制限を超えていればさらに縮小・画質低下
+                        width -= 100
+                        quality -= 10
+                        if quality < 10 or width < 200:
+                            break
+                    
                     ws_media.append_row([str(no), uploaded_file.name, encoded])
                     st.success("アップロード成功！")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"エラーが発生しました: {e}")
+                    st.error(f"エラーが発生しました。写真が大きすぎる可能性があります: {e}")
 
     st.subheader("保存済み写真")
     if match_photos:
@@ -144,17 +156,16 @@ if st.session_state.media_no is not None:
                     img_data = base64.b64decode(item['base64_data'])
                     st.image(img_data, use_container_width=True)
                     if st.button("削除", key=f"del_{idx}"):
-                        # データの検索と削除
                         cell = ws_media.find(item['base64_data'])
                         ws_media.delete_rows(cell.row)
                         st.rerun()
                 except:
-                    st.error("データの読み込みに失敗しました")
+                    st.error("データの読み込み失敗")
     else:
         st.info("写真がありません。")
 
-# B. 詳細入力画面
 elif st.session_state.selected_no is not None:
+    # 既存の結果入力画面
     no = st.session_state.selected_no
     st.title(f"📝 試合結果入力 (No.{no})")
     if st.button("← 一覧に戻る"):
@@ -163,11 +174,7 @@ elif st.session_state.selected_no is not None:
     
     client = get_gspread_client()
     sh = client.open_by_url(SPREADSHEET_URL)
-    try:
-        ws_res = sh.get_worksheet(1)
-    except:
-        ws_res = sh.add_worksheet(title="results", rows="100", cols="2")
-        
+    ws_res = sh.get_worksheet(1)
     res_raw = ws_res.acell("A2").value
     all_results = json.loads(res_raw) if res_raw else {}
     
@@ -183,8 +190,8 @@ elif st.session_state.selected_no is not None:
                 ws_res.update_acell("A2", json.dumps(all_results, ensure_ascii=False))
                 st.rerun()
 
-# C. 一覧画面
 else:
+    # 一覧画面
     st.title("⚽ KSC試合管理一覧")
     c1, c2 = st.columns([2, 1])
     with c1: search_query = st.text_input("🔍 検索")
