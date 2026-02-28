@@ -4,6 +4,7 @@ from datetime import date
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import json
+import base64
 
 # --- 1. ページ設定 ---
 st.set_page_config(page_title="KSC試合管理ツール", layout="wide")
@@ -36,24 +37,23 @@ def load_data():
             "対戦相手": [""] * 100,
             "試合場所": [""] * 100,
             "試合分類": [""] * 100,
-            "備考": [""] * 100
+            "備考": [""] * 100,
+            "動画＆画像": [False] * 100
         })
     else:
         df = pd.DataFrame(data)
     
-    # 不要な「選択」列がデータに含まれている場合は削除
     if "選択" in df.columns:
         df = df.drop(columns=["選択"])
     
-    # 全ての「詳細」チェックボックスをFalseで初期化
     df['詳細'] = False
+    df['動画＆画像'] = False # 遷移用フラグ
     
-    # 日時を日付型に変換
     if '日時' in df.columns:
         df['日時'] = pd.to_datetime(df['日時']).dt.date
     
-    # 列の並び順を「詳細」が一番左になるよう再構成
-    target_order = ['詳細', 'No', 'カテゴリー', '日時', '対戦相手', '試合場所', '試合分類', '備考']
+    # 列順：備考の右側に「動画＆画像」を配置
+    target_order = ['詳細', 'No', 'カテゴリー', '日時', '対戦相手', '試合場所', '試合分類', '備考', '動画＆画像']
     actual_cols = [col for col in target_order if col in df.columns]
     df = df[actual_cols]
     
@@ -67,9 +67,9 @@ def save_list(df):
     if '日時' in df_save.columns:
         df_save['日時'] = df_save['日時'].apply(lambda x: x.isoformat() if hasattr(x, 'isoformat') else str(x))
     
-    # スプレッドシート保存時も「詳細」列は不要なため削除して保存
-    if "詳細" in df_save.columns:
-        df_save = df_save.drop(columns=["詳細"])
+    # 制御用列はスプレッドシートには保存しない
+    drop_cols = [c for c in ["詳細", "動画＆画像"] if c in df_save.columns]
+    df_save = df_save.drop(columns=drop_cols)
         
     ws.update([df_save.columns.values.tolist()] + df_save.values.tolist())
 
@@ -95,6 +95,8 @@ if 'df_list' not in st.session_state:
 
 if 'selected_no' not in st.session_state:
     st.session_state.selected_no = None
+if 'media_no' not in st.session_state:
+    st.session_state.media_no = None
 
 def on_data_change():
     changes = st.session_state["editor"]
@@ -102,70 +104,34 @@ def on_data_change():
     for row_idx, edit_values in changes["edited_rows"].items():
         actual_no = st.session_state.current_display_df.iloc[row_idx]["No"]
         
+        # 詳細入力への遷移
         if edit_values.get("詳細") == True:
             st.session_state.selected_no = int(actual_no)
             st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, "詳細"] = False
             return 
         
+        # 動画＆画像への遷移
+        if edit_values.get("動画＆画像") == True:
+            st.session_state.media_no = int(actual_no)
+            st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, "動画＆画像"] = False
+            return
+
         for col, val in edit_values.items():
-            if col != "詳細":
+            if col not in ["詳細", "動画＆画像"]:
                 st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, col] = val
     
     save_list(st.session_state.df_list)
-    st.toast("スプレッドシートを更新しました ☁️")
+    st.toast("更新しました ☁️")
 
-# --- 5. 一覧画面 ---
-if st.session_state.selected_no is None:
-    st.title("⚽ KSC試合管理一覧")
-
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        search_query = st.text_input("🔍 キーワード検索", "")
-    with c2:
-        cat_filter = st.selectbox("📅 カテゴリー絞り込み", ["すべて", "U8", "U9", "U10", "U11", "U12"])
-
-    df_display = st.session_state.df_list.copy()
-    if cat_filter != "すべて":
-        df_display = df_display[df_display["カテゴリー"] == cat_filter]
-    if search_query:
-        df_display = df_display[df_display.apply(lambda r: search_query.lower() in r.astype(str).str.lower().values, axis=1)]
-    
-    st.session_state.current_display_df = df_display
-
-    st.data_editor(
-        df_display,
-        hide_index=True,
-        column_config={
-            "詳細": st.column_config.CheckboxColumn("入力", default=False, width="small"),
-            "No": st.column_config.NumberColumn(disabled=True, width="small"),
-            "カテゴリー": st.column_config.SelectboxColumn("カテゴリー", options=["U8", "U9", "U10", "U11", "U12"], width="small"),
-            "日時": st.column_config.DateColumn("日時", format="YYYY-MM-DD", width="medium"),
-            "対戦相手": st.column_config.TextColumn("対戦相手", width="medium"),
-        },
-        use_container_width=True,
-        key="editor",
-        on_change=on_data_change
-    )
-
-    st.divider()
-    st.markdown(
-        '<button onclick="window.print()" style="width:100%; height:40px; border-radius:8px; border:1px solid #ddd; background-color:#ffffff; cursor:pointer; font-weight:bold;">📄 一覧をPDF出力 / 印刷</button>', 
-        unsafe_allow_html=True
-    )
-
-# --- 6. 詳細入力画面 ---
-else:
-    no = st.session_state.selected_no
-    match_info = st.session_state.df_list[st.session_state.df_list["No"] == no].iloc[0]
-    
-    st.title(f"📝 試合結果入力 (No.{no})")
-    st.info(f"**{match_info['カテゴリー']}** | {match_info['日時']} | vs {match_info['対戦相手']}")
-
+# --- 5. メイン画面制御 ---
+# A. 動画＆画像アップロード画面
+if st.session_state.media_no is not None:
+    no = st.session_state.media_no
+    st.title(f"📁 メディア管理 (No.{no})")
     if st.button("← 一覧に戻る"):
-        st.session_state.selected_no = None
-        st.session_state.df_list = load_data()
+        st.session_state.media_no = None
         st.rerun()
-
+    
     st.divider()
     
     client = get_gspread_client()
@@ -175,21 +141,77 @@ else:
     except:
         ws_res = sh.add_worksheet(title="results", rows="100", cols="2")
     
+    res_raw = ws_res.acell("B2").value # メディア用はB列を使用
+    all_media = json.loads(res_raw) if res_raw else {}
+    match_media = all_media.get(str(no), [])
+
+    # アップロード
+    uploaded_file = st.file_uploader("画像または動画を選択してください", type=["png", "jpg", "jpeg", "mp4", "mov"])
+    if uploaded_file is not None:
+        if st.button("アップロード実行"):
+            file_bytes = uploaded_file.read()
+            encoded = base64.b64encode(file_bytes).decode()
+            match_media.append({
+                "name": uploaded_file.name,
+                "type": uploaded_file.type,
+                "data": encoded
+            })
+            all_media[str(no)] = match_media
+            ws_res.update_acell("B2", json.dumps(all_media))
+            st.success("アップロード完了！")
+            st.rerun()
+
+    st.subheader("保存済みメディア")
+    if not match_media:
+        st.write("まだファイルはありません。")
+    else:
+        cols = st.columns(3)
+        for idx, item in enumerate(match_media):
+            with cols[idx % 3]:
+                st.write(f"📄 {item['name']}")
+                data = base64.b64decode(item['data'])
+                if "image" in item['type']:
+                    st.image(data, use_container_width=True)
+                elif "video" in item['type']:
+                    st.video(data)
+                if st.button(f"削除", key=f"del_{idx}"):
+                    match_media.pop(idx)
+                    all_media[str(no)] = match_media
+                    ws_res.update_acell("B2", json.dumps(all_media))
+                    st.rerun()
+
+# B. 詳細入力画面
+elif st.session_state.selected_no is not None:
+    no = st.session_state.selected_no
+    match_info = st.session_state.df_list[st.session_state.df_list["No"] == no].iloc[0]
+    st.title(f"📝 試合結果入力 (No.{no})")
+    if st.button("← 一覧に戻る"):
+        st.session_state.selected_no = None
+        st.session_state.df_list = load_data()
+        st.rerun()
+    # (既存の結果入力ロジックを維持)
+    client = get_gspread_client()
+    sh = client.open_by_url(SPREADSHEET_URL)
+    ws_res = sh.get_worksheet(1)
     res_raw = ws_res.acell("A2").value
     all_results = json.loads(res_raw) if res_raw else {}
-    
     for i in range(1, 16):
         rk = f"res_{no}_{i}"
         sd = all_results.get(rk, {"score": "", "scorers": [""] * 10})
         with st.expander(f"第 {i} 試合 {'✅ 保存済' if rk in all_results else ''}"):
-            sc = st.text_input("スコア", value=sd["score"], key=f"s_{rk}", placeholder="0-0")
+            sc = st.text_input("スコア", value=sd["score"], key=f"s_{rk}")
             scorers_str = ", ".join([s for s in sd["scorers"] if s])
-            sc_input = st.text_area("得点者 (カンマ区切り)", value=scorers_str, key=f"p_{rk}")
-            
-            if st.button("試合内容を保存", key=f"b_{rk}"):
+            sc_input = st.text_area("得点者", value=scorers_str, key=f"p_{rk}")
+            if st.button("保存", key=f"b_{rk}"):
                 new_s = [s.strip() for s in sc_input.split(",") if s.strip()]
                 new_s += [""] * (10 - len(new_s))
                 all_results[rk] = {"score": sc, "scorers": new_s[:10]}
                 ws_res.update_acell("A2", json.dumps(all_results, ensure_ascii=False))
-                st.toast(f"第{i}試合 保存完了")
                 st.rerun()
+
+# C. 一覧画面
+else:
+    st.title("⚽ KSC試合管理一覧")
+    c1, c2 = st.columns([2, 1])
+    with c1: search_query = st.text_input("🔍 検索", "")
+    with c2: cat_filter = st.selectbox("📅 フィルタ", ["すべて", "U8",
