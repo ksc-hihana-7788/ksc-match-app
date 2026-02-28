@@ -31,9 +31,7 @@ def load_data():
     
     try:
         data = ws_list.get_all_records()
-    except Exception as e:
-        # 巨大データで読み込みエラーが出た場合のセーフティ
-        st.warning("シートのデータが大きすぎるため、新規データとして表示します。")
+    except Exception:
         data = []
     
     if not data:
@@ -45,7 +43,7 @@ def load_data():
     else:
         df = pd.DataFrame(data)
     
-    # 列名の調整
+    # 列整理
     if "選択" in df.columns: df = df.drop(columns=["選択"])
     if "動画＆画像" in df.columns: df = df.rename(columns={"動画＆画像": "写真(画像)"})
     
@@ -63,10 +61,16 @@ def save_list(df):
     sh = client.open_by_url(SPREADSHEET_URL)
     ws = sh.get_worksheet(0)
     df_save = df.copy()
+    
+    # 日付型を文字列に変換
     if '日時' in df_save.columns:
         df_save['日時'] = df_save['日時'].apply(lambda x: x.isoformat() if hasattr(x, 'isoformat') else str(x))
+    
+    # UI用の制御列（詳細・写真）はスプレッドシートには保存しない
     drop_cols = [c for c in ["詳細", "写真(画像)"] if c in df_save.columns]
     df_save = df_save.drop(columns=drop_cols)
+    
+    # 全データを上書き
     ws.update([df_save.columns.values.tolist()] + df_save.values.tolist())
 
 # --- 3. 認証処理 ---
@@ -87,18 +91,28 @@ if 'selected_no' not in st.session_state: st.session_state.selected_no = None
 if 'media_no' not in st.session_state: st.session_state.media_no = None
 
 def on_data_change():
+    # 編集内容の取得
     changes = st.session_state["editor"]
+    
+    # 変更があった行をループで処理
     for row_idx, edit_values in changes["edited_rows"].items():
+        # 表示中のDFから該当行の「No」を特定
         actual_no = st.session_state.current_display_df.iloc[row_idx]["No"]
-        if edit_values.get("詳細") == True:
+        
+        # 「詳細」または「写真」のチェックボックスが押された場合は画面遷移を優先
+        if edit_values.get("詳細") is True:
             st.session_state.selected_no = int(actual_no)
-            return 
-        if edit_values.get("写真(画像)") == True:
+            return
+        if edit_values.get("写真(画像)") is True:
             st.session_state.media_no = int(actual_no)
             return
+            
+        # その他の編集（対戦相手、場所など）をセッションのメインデータに反映
         for col, val in edit_values.items():
             if col not in ["詳細", "写真(画像)"]:
                 st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, col] = val
+    
+    # 編集が完了したらスプレッドシートへ自動保存
     save_list(st.session_state.df_list)
 
 # --- 5. メイン画面制御 ---
@@ -120,38 +134,28 @@ if st.session_state.media_no is not None:
     all_media_data = ws_media.get_all_records()
     match_photos = [r for r in all_media_data if str(r['match_no']) == str(no)]
 
-    uploaded_file = st.file_uploader("スマホ写真を選択(JPEG/PNG)", type=["png", "jpg", "jpeg"])
+    uploaded_file = st.file_uploader("スマホ写真を選択", type=["png", "jpg", "jpeg"])
     if uploaded_file and st.button("アップロード実行"):
-        with st.spinner("Googleの制限内に収まるよう自動圧縮中..."):
+        with st.spinner("圧縮中..."):
             try:
                 img = Image.open(uploaded_file)
                 img = ImageOps.exif_transpose(img).convert("RGB")
-                
-                # 自動圧縮ループ：40,000文字（約30KB）以下になるまで繰り返す
-                quality = 70
-                width = 800
-                encoded = ""
-                
+                quality, width = 70, 800
                 while True:
                     img_temp = img.copy()
                     img_temp.thumbnail((width, width))
                     buf = BytesIO()
                     img_temp.save(buf, format="JPEG", quality=quality, optimize=True)
                     encoded = base64.b64encode(buf.getvalue()).decode()
-                    
-                    if len(encoded) < 40000:
-                        break
-                    
+                    if len(encoded) < 40000: break
                     width -= 100
                     quality -= 10
-                    if quality < 5 or width < 200:
-                        break
-                
+                    if quality < 5 or width < 200: break
                 ws_media.append_row([str(no), uploaded_file.name, encoded])
-                st.success("写真を保存しました！")
+                st.success("写真を保存しました")
                 st.rerun()
             except Exception as e:
-                st.error(f"保存エラー: {e}")
+                st.error(f"エラー: {e}")
 
     st.subheader("保存済み写真")
     if match_photos:
@@ -163,8 +167,6 @@ if st.session_state.media_no is not None:
                     cell = ws_media.find(item['base64_data'])
                     ws_media.delete_rows(cell.row)
                     st.rerun()
-    else:
-        st.info("写真がありません。")
 
 elif st.session_state.selected_no is not None:
     no = st.session_state.selected_no
@@ -194,7 +196,7 @@ elif st.session_state.selected_no is not None:
                 new_s = [s.strip() for s in sc_input.split(",") if s.strip()] + [""] * 10
                 all_results[rk] = {"score": sc, "scorers": new_s[:10]}
                 ws_res.update_acell("A2", json.dumps(all_results, ensure_ascii=False))
-                st.success("結果を保存しました")
+                st.success("保存しました")
 
 else:
     st.title("⚽ KSC試合管理一覧")
@@ -207,15 +209,21 @@ else:
     if search_query: df = df[df.apply(lambda r: search_query.lower() in r.astype(str).str.lower().values, axis=1)]
     
     st.session_state.current_display_df = df
+    
+    # リアルタイム自動保存を有効にしたデータエディタ
     st.data_editor(
         df, 
         hide_index=True, 
         column_config={
-            "詳細": st.column_config.CheckboxColumn("結果", width="small"),
+            "詳細": st.column_config.CheckboxColumn("結果入力", width="small"),
             "No": st.column_config.NumberColumn(disabled=True, width="small"),
-            "写真(画像)": st.column_config.CheckboxColumn("写真", width="small"),
+            "写真(画像)": st.column_config.CheckboxColumn("写真管理", width="small"),
             "カテゴリー": st.column_config.SelectboxColumn("カテゴリー", options=["U8", "U9", "U10", "U11", "U12"], width="small"),
-            "日時": st.column_config.DateColumn("日時", format="YYYY-MM-DD")
+            "日時": st.column_config.DateColumn("日時", format="YYYY-MM-DD"),
+            "対戦相手": st.column_config.TextColumn("対戦相手"),
+            "試合場所": st.column_config.TextColumn("試合場所"),
+            "試合分類": st.column_config.TextColumn("試合分類"),
+            "備考": st.column_config.TextColumn("備考")
         }, 
         use_container_width=True, 
         key="editor", 
