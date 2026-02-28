@@ -6,7 +6,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import json
 import base64
 from io import BytesIO
-from PIL import Image # 画像圧縮用
+from PIL import Image, ImageOps # 画像処理・回転補正用
 
 # --- 1. ページ設定 ---
 st.set_page_config(page_title="KSC試合管理ツール", layout="wide")
@@ -34,17 +34,19 @@ def load_data():
         df = pd.DataFrame({
             "詳細": [False] * 100, "No": range(1, 101), "カテゴリー": ["U12"] * 100,
             "日時": [date.today().isoformat()] * 100, "対戦相手": [""] * 100,
-            "試合場所": [""] * 100, "試合分類": [""] * 100, "備考": [""] * 100, "動画＆画像": [False] * 100
+            "試合場所": [""] * 100, "試合分類": [""] * 100, "備考": [""] * 100, "写真(画像)": [False] * 100
         })
     else:
         df = pd.DataFrame(data)
     
     if "選択" in df.columns: df = df.drop(columns=["選択"])
+    if "動画＆画像" in df.columns: df = df.rename(columns={"動画＆画像": "写真(画像)"})
+    
     df['詳細'] = False
-    df['動画＆画像'] = False
+    df['写真(画像)'] = False
     if '日時' in df.columns: df['日時'] = pd.to_datetime(df['日時']).dt.date
     
-    target_order = ['詳細', 'No', 'カテゴリー', '日時', '対戦相手', '試合場所', '試合分類', '備考', '動画＆画像']
+    target_order = ['詳細', 'No', 'カテゴリー', '日時', '対戦相手', '試合場所', '試合分類', '備考', '写真(画像)']
     actual_cols = [col for col in target_order if col in df.columns]
     return df[actual_cols]
 
@@ -55,7 +57,7 @@ def save_list(df):
     df_save = df.copy()
     if '日時' in df_save.columns:
         df_save['日時'] = df_save['日時'].apply(lambda x: x.isoformat() if hasattr(x, 'isoformat') else str(x))
-    drop_cols = [c for c in ["詳細", "動画＆画像"] if c in df_save.columns]
+    drop_cols = [c for c in ["詳細", "写真(画像)"] if c in df_save.columns]
     df_save = df_save.drop(columns=drop_cols)
     ws.update([df_save.columns.values.tolist()] + df_save.values.tolist())
 
@@ -84,20 +86,20 @@ def on_data_change():
             st.session_state.selected_no = int(actual_no)
             st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, "詳細"] = False
             return 
-        if edit_values.get("動画＆画像") == True:
+        if edit_values.get("写真(画像)") == True:
             st.session_state.media_no = int(actual_no)
-            st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, "動画＆画像"] = False
+            st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, "写真(画像)"] = False
             return
         for col, val in edit_values.items():
-            if col not in ["詳細", "動画＆画像"]:
+            if col not in ["詳細", "写真(画像)"]:
                 st.session_state.df_list.loc[st.session_state.df_list['No'] == actual_no, col] = val
     save_list(st.session_state.df_list)
 
 # --- 5. メイン画面制御 ---
-# A. 動画＆画像画面
+# A. 写真管理画面
 if st.session_state.media_no is not None:
     no = st.session_state.media_no
-    st.title(f"📁 メディア管理 (No.{no})")
+    st.title(f"🖼️ 写真管理 (No.{no})")
     if st.button("← 一覧に戻る"):
         st.session_state.media_no = None
         st.rerun()
@@ -111,46 +113,45 @@ if st.session_state.media_no is not None:
     all_media = json.loads(res_raw) if res_raw else {}
     match_media = all_media.get(str(no), [])
 
-    uploaded_file = st.file_uploader("画像/動画を選択 (画像は自動圧縮されます)", type=["png", "jpg", "jpeg", "mp4"])
+    uploaded_file = st.file_uploader("スマホの写真を選択してください", type=["png", "jpg", "jpeg"])
     if uploaded_file:
         if st.button("アップロード実行"):
-            with st.spinner("処理中..."):
-                file_type = uploaded_file.type
-                if "image" in file_type:
-                    img = Image.open(uploaded_file)
-                    img = img.convert("RGB")
-                    img.thumbnail((800, 800)) # サイズ縮小
-                    buf = BytesIO()
-                    img.save(buf, format="JPEG", quality=60) # 圧縮
-                    encoded = base64.b64encode(buf.getvalue()).decode()
-                else:
-                    encoded = base64.b64encode(uploaded_file.read()).decode()
-                
-                match_media.append({"name": uploaded_file.name, "type": file_type, "data": encoded})
-                all_media[str(no)] = match_media
+            with st.spinner("スマホ写真を最適化中..."):
                 try:
+                    img = Image.open(uploaded_file)
+                    # スマホ特有の回転情報を補正
+                    img = ImageOps.exif_transpose(img)
+                    img = img.convert("RGB")
+                    # 容量削減のためサイズを縮小（長辺1200px）
+                    img.thumbnail((1200, 1200)) 
+                    
+                    buf = BytesIO()
+                    # 画質を調整して容量を大幅カット
+                    img.save(buf, format="JPEG", quality=50, optimize=True) 
+                    encoded = base64.b64encode(buf.getvalue()).decode()
+                    
+                    match_media.append({"name": uploaded_file.name, "type": "image/jpeg", "data": encoded})
+                    all_media[str(no)] = match_media
                     ws_res.update_acell("B2", json.dumps(all_media))
-                    st.success("成功！")
+                    st.success("アップロード成功！")
                     st.rerun()
-                except Exception:
-                    st.error("エラー：ファイルが大きすぎてスプレッドシートの制限を超えました。より小さいファイルを選択してください。")
+                except Exception as e:
+                    st.error(f"エラーが発生しました: {e}")
 
-    st.subheader("保存済みメディア")
+    st.subheader("保存済み写真")
     if match_media:
         cols = st.columns(3)
         for idx, item in enumerate(match_media):
             with cols[idx % 3]:
-                st.caption(item['name'])
                 data = base64.b64decode(item['data'])
-                if "image" in item['type']: st.image(data)
-                else: st.video(data)
+                st.image(data, use_container_width=True)
                 if st.button("削除", key=f"del_{idx}"):
                     match_media.pop(idx)
                     all_media[str(no)] = match_media
                     ws_res.update_acell("B2", json.dumps(all_media))
                     st.rerun()
 
-# B. 詳細入力画面 (既存維持)
+# B. 詳細入力画面
 elif st.session_state.selected_no is not None:
     no = st.session_state.selected_no
     st.title(f"📝 試合結果入力 (No.{no})")
@@ -163,7 +164,7 @@ elif st.session_state.selected_no is not None:
     ws_res = sh.get_worksheet(1)
     res_raw = ws_res.acell("A2").value
     all_results = json.loads(res_raw) if res_raw else {}
-    for i in range(1, 11): # 10試合分に整理
+    for i in range(1, 11):
         rk = f"res_{no}_{i}"
         sd = all_results.get(rk, {"score": "", "scorers": [""] * 10})
         with st.expander(f"第 {i} 試合"):
@@ -175,7 +176,7 @@ elif st.session_state.selected_no is not None:
                 ws_res.update_acell("A2", json.dumps(all_results, ensure_ascii=False))
                 st.rerun()
 
-# C. 一覧画面 (既存維持)
+# C. 一覧画面
 else:
     st.title("⚽ KSC試合管理一覧")
     c1, c2 = st.columns([2, 1])
@@ -188,6 +189,6 @@ else:
     st.data_editor(df, hide_index=True, column_config={
         "詳細": st.column_config.CheckboxColumn("結果", width="small"),
         "No": st.column_config.NumberColumn(disabled=True, width="small"),
-        "動画＆画像": st.column_config.CheckboxColumn("メディア", width="small"),
+        "写真(画像)": st.column_config.CheckboxColumn("写真", width="small"),
         "カテゴリー": st.column_config.SelectboxColumn("カテゴリー", options=["U8", "U9", "U10", "U11", "U12"], width="small"),
     }, use_container_width=True, key="editor", on_change=on_data_change)
