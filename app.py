@@ -44,7 +44,11 @@ def load_data():
     
     df['詳細'] = False
     df['写真(画像)'] = False
-    if '日時' in df.columns: df['日時'] = pd.to_datetime(df['日時']).dt.date
+    if '日時' in df.columns: 
+        try:
+            df['日時'] = pd.to_datetime(df['日時']).dt.date
+        except:
+            pass
     
     target_order = ['詳細', 'No', 'カテゴリー', '日時', '対戦相手', '試合場所', '試合分類', '備考', '写真(画像)']
     actual_cols = [col for col in target_order if col in df.columns]
@@ -64,7 +68,7 @@ def save_list(df):
 # --- 3. 認証処理 ---
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
 if not st.session_state.authenticated:
-    st.title("KSC試合管理 ログイン")
+    st.title("⚽ KSCログイン")
     u, p = st.text_input("ID"), st.text_input("PASS", type="password")
     if st.button("ログイン"):
         if u == st.secrets["LOGIN_ID"] and p == st.secrets["LOGIN_PASS"]:
@@ -82,10 +86,10 @@ def on_data_change():
     changes = st.session_state["editor"]
     for row_idx, edit_values in changes["edited_rows"].items():
         actual_no = st.session_state.current_display_df.iloc[row_idx]["No"]
-        if edit_values.get("詳細") == True:
+        if edit_values.get("詳細"):
             st.session_state.selected_no = int(actual_no)
             return 
-        if edit_values.get("写真(画像)") == True:
+        if edit_values.get("写真(画像)"):
             st.session_state.media_no = int(actual_no)
             return
         for col, val in edit_values.items():
@@ -112,60 +116,55 @@ if st.session_state.media_no is not None:
     all_media_data = ws_media.get_all_records()
     match_photos = [r for r in all_media_data if str(r['match_no']) == str(no)]
 
-    uploaded_file = st.file_uploader("スマホの写真を選択してください (自動で最適化されます)", type=["png", "jpg", "jpeg"])
-    if uploaded_file:
-        if st.button("アップロード実行"):
-            with st.spinner("写真を Google の制限に合わせて圧縮中..."):
-                try:
-                    img = Image.open(uploaded_file)
-                    img = ImageOps.exif_transpose(img)
-                    img = img.convert("RGB")
+    uploaded_file = st.file_uploader("スマホ写真を選択", type=["png", "jpg", "jpeg"])
+    if uploaded_file and st.button("アップロード実行"):
+        with st.spinner("Googleの制限に合わせて画像を最適化中..."):
+            try:
+                img = Image.open(uploaded_file)
+                img = ImageOps.exif_transpose(img)
+                img = img.convert("RGB")
+                
+                # 自動リサイズ・圧縮ループ
+                quality = 70
+                width = 1000
+                encoded = ""
+                
+                while True:
+                    img_temp = img.copy()
+                    img_temp.thumbnail((width, width))
+                    buf = BytesIO()
+                    img_temp.save(buf, format="JPEG", quality=quality, optimize=True)
+                    encoded = base64.b64encode(buf.getvalue()).decode()
                     
-                    # ★抜本的改善：Googleのセル制限（5万文字）に収まるまでループで圧縮
-                    quality = 60
-                    width = 800 # 初期幅を小さめに設定
+                    if len(encoded) < 48000: # Googleの5万文字制限の直前まで
+                        break
                     
-                    while True:
-                        img.thumbnail((width, width))
-                        buf = BytesIO()
-                        img.save(buf, format="JPEG", quality=quality, optimize=True)
-                        encoded = base64.b64encode(buf.getvalue()).decode()
-                        
-                        # エンコード後の文字数が45,000文字以下ならOK（安全圏）
-                        if len(encoded) < 45000:
-                            break
-                        
-                        # 制限を超えていればさらに縮小・画質低下
-                        width -= 100
-                        quality -= 10
-                        if quality < 10 or width < 200:
-                            break
-                    
-                    ws_media.append_row([str(no), uploaded_file.name, encoded])
-                    st.success("アップロード成功！")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"エラーが発生しました。写真が大きすぎる可能性があります: {e}")
+                    quality -= 10
+                    width -= 100
+                    if quality < 10 or width < 200:
+                        break
+                
+                ws_media.append_row([str(no), uploaded_file.name, encoded])
+                st.success("成功しました！")
+                st.rerun()
+            except Exception as e:
+                st.error(f"保存失敗: {e}")
 
     st.subheader("保存済み写真")
     if match_photos:
         cols = st.columns(3)
         for idx, item in enumerate(match_photos):
             with cols[idx % 3]:
-                try:
-                    img_data = base64.b64decode(item['base64_data'])
-                    st.image(img_data, use_container_width=True)
-                    if st.button("削除", key=f"del_{idx}"):
-                        cell = ws_media.find(item['base64_data'])
-                        ws_media.delete_rows(cell.row)
-                        st.rerun()
-                except:
-                    st.error("データの読み込み失敗")
+                img_data = base64.b64decode(item['base64_data'])
+                st.image(img_data, use_container_width=True)
+                if st.button("削除", key=f"del_{idx}"):
+                    cell = ws_media.find(item['base64_data'])
+                    ws_media.delete_rows(cell.row)
+                    st.rerun()
     else:
         st.info("写真がありません。")
 
 elif st.session_state.selected_no is not None:
-    # 既存の結果入力画面
     no = st.session_state.selected_no
     st.title(f"📝 試合結果入力 (No.{no})")
     if st.button("← 一覧に戻る"):
@@ -174,7 +173,11 @@ elif st.session_state.selected_no is not None:
     
     client = get_gspread_client()
     sh = client.open_by_url(SPREADSHEET_URL)
-    ws_res = sh.get_worksheet(1)
+    try:
+        ws_res = sh.get_worksheet(1)
+    except:
+        ws_res = sh.add_worksheet(title="results", rows="100", cols="2")
+        
     res_raw = ws_res.acell("A2").value
     all_results = json.loads(res_raw) if res_raw else {}
     
@@ -188,10 +191,9 @@ elif st.session_state.selected_no is not None:
                 new_s = [s.strip() for s in sc_input.split(",") if s.strip()] + [""] * 10
                 all_results[rk] = {"score": sc, "scorers": new_s[:10]}
                 ws_res.update_acell("A2", json.dumps(all_results, ensure_ascii=False))
-                st.rerun()
+                st.success(f"第 {i} 試合を保存しました")
 
 else:
-    # 一覧画面
     st.title("⚽ KSC試合管理一覧")
     c1, c2 = st.columns([2, 1])
     with c1: search_query = st.text_input("🔍 検索")
@@ -207,4 +209,5 @@ else:
         "No": st.column_config.NumberColumn(disabled=True, width="small"),
         "写真(画像)": st.column_config.CheckboxColumn("写真", width="small"),
         "カテゴリー": st.column_config.SelectboxColumn("カテゴリー", options=["U8", "U9", "U10", "U11", "U12"], width="small"),
+        "日時": st.column_config.DateColumn("日時", format="YYYY-MM-DD")
     }, use_container_width=True, key="editor", on_change=on_data_change)
